@@ -18,7 +18,6 @@ import (
 	_ "github.com/xtls/xray-core/main/distro/all"
 )
 
-// V2RayCoreManager manages V2Ray/Xray core instances
 type V2RayCoreManager struct {
 	mu        sync.RWMutex
 	instance  *core.Instance
@@ -26,18 +25,14 @@ type V2RayCoreManager struct {
 	ctx       context.Context
 	isRunning bool
 
-	// Network configuration
-	socksPort int // 15491 for tun2socks
-	apiPort   int // 15490 for dashboard
-
-	// Configuration
+	socksPort  int
+	apiPort    int
 	configPath string
 	assetPath  string
 	logLevel   string
 	shouldOff  chan int
 }
 
-// NewV2RayCoreManager creates a new V2Ray core manager
 func NewV2RayCoreManager(socksPort, apiPort int) *V2RayCoreManager {
 	return &V2RayCoreManager{
 		socksPort: socksPort,
@@ -47,21 +42,18 @@ func NewV2RayCoreManager(socksPort, apiPort int) *V2RayCoreManager {
 	}
 }
 
-// SetAssetPath sets the asset directory path
 func (v *V2RayCoreManager) SetAssetPath(assetPath string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.assetPath = assetPath
 }
 
-// SetLogLevel sets the logging level
 func (v *V2RayCoreManager) SetLogLevel(logLevel string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.logLevel = logLevel
 }
 
-// RunConfig starts the V2Ray core with the specified configuration
 func (v *V2RayCoreManager) RunConfig(configPath string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -103,7 +95,6 @@ func (v *V2RayCoreManager) runConfigSync(configPath string) {
 		v.mu.Unlock()
 	}()
 
-	// Read and inject configuration
 	configBytes, err := v.readAndInjectConfig(configPath)
 	if err != nil {
 		log.Printf("Failed to read/inject V2Ray config: %v", err)
@@ -173,16 +164,14 @@ func (v *V2RayCoreManager) runConfigSync(configPath string) {
 	log.Println("V2Ray core stopped")
 }
 
-// Stop stops the V2Ray core
 func (v *V2RayCoreManager) Stop() error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
 	if !v.isRunning {
-		return nil // Already stopped
+		return nil
 	}
 
-	// Signal shutdown
 	select {
 	case v.shouldOff <- 1:
 	default:
@@ -205,14 +194,12 @@ func (v *V2RayCoreManager) Stop() error {
 	return nil
 }
 
-// IsRunning returns whether the V2Ray core is running
 func (v *V2RayCoreManager) IsRunning() bool {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.isRunning && v.instance != nil
 }
 
-// TestConfig validates the V2Ray configuration without starting
 func (v *V2RayCoreManager) TestConfig(configPath string) error {
 	// Read and inject configuration
 	configBytes, err := v.readAndInjectConfig(configPath)
@@ -220,7 +207,6 @@ func (v *V2RayCoreManager) TestConfig(configPath string) error {
 		return fmt.Errorf("failed to read/inject config: %w", err)
 	}
 
-	// Try to parse the configuration
 	r := bytes.NewReader(configBytes)
 	_, err = serial.LoadJSONConfig(r)
 	if err != nil {
@@ -231,21 +217,18 @@ func (v *V2RayCoreManager) TestConfig(configPath string) error {
 	return nil
 }
 
-// readAndInjectConfig reads the config file and injects required settings
 func (v *V2RayCoreManager) readAndInjectConfig(configPath string) ([]byte, error) {
-	// Read original config
+
 	configBytes, err := v.readFileAsBytes(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Parse JSON
 	var config map[string]interface{}
 	if err := json.Unmarshal(configBytes, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
-	// Inject required configuration
 	v.injectRequiredConfig(config)
 
 	// Marshal back to JSON
@@ -257,9 +240,8 @@ func (v *V2RayCoreManager) readAndInjectConfig(configPath string) ([]byte, error
 	return injectedBytes, nil
 }
 
-// injectRequiredConfig injects SOCKS proxy and API configuration
 func (v *V2RayCoreManager) injectRequiredConfig(config map[string]interface{}) {
-	// Ensure inbounds array exists
+
 	if _, exists := config["inbounds"]; !exists {
 		config["inbounds"] = make([]interface{}, 0)
 	}
@@ -412,7 +394,6 @@ func (v *V2RayCoreManager) readFileAsBytes(filePath string) ([]byte, error) {
 	return bs, nil
 }
 
-// GetStats returns V2Ray specific statistics
 func (v *V2RayCoreManager) GetStats() map[string]interface{} {
 	v.mu.RLock()
 	defer v.mu.RUnlock()

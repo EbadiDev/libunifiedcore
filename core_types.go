@@ -8,21 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CoreType represents the type of proxy core being used
 type CoreType int
 
 const (
-	// CoreTypeV2Ray represents V2Ray core
 	CoreTypeV2Ray CoreType = iota
-	// CoreTypeXray represents Xray core (V2Ray fork)
 	CoreTypeXray
-	// CoreTypeMihomo represents Mihomo core (Clash Meta successor)
 	CoreTypeMihomo
-	// CoreTypeClash is a legacy alias for Mihomo (deprecated, use CoreTypeMihomo)
 	CoreTypeClash = CoreTypeMihomo
 )
 
-// String returns the string representation of the CoreType
 func (ct CoreType) String() string {
 	switch ct {
 	case CoreTypeV2Ray:
@@ -36,7 +30,6 @@ func (ct CoreType) String() string {
 	}
 }
 
-// DisplayName returns a user-friendly display name for the CoreType
 func (ct CoreType) DisplayName() string {
 	switch ct {
 	case CoreTypeV2Ray:
@@ -71,7 +64,6 @@ func ParseCoreType(coreTypeStr string) (CoreType, error) {
 	}
 }
 
-// DetectCoreTypeFromConfig attempts to detect the core type from configuration content
 func DetectCoreTypeFromConfig(configContent string) (CoreType, error) {
 	configContent = strings.TrimSpace(configContent)
 
@@ -208,7 +200,6 @@ func (ct CoreType) GetDefaultPorts() (socksPort, httpPort, apiPort int) {
 	}
 }
 
-// GetConfigFormat returns the expected configuration format for the core type
 func (ct CoreType) GetConfigFormat() string {
 	switch ct {
 	case CoreTypeV2Ray, CoreTypeXray:

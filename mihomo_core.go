@@ -18,29 +18,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// MihomoCoreManager manages Mihomo core instances using the proper hub.Parse approach
 type MihomoCoreManager struct {
 	mu        sync.RWMutex
 	isRunning bool
 	cancel    context.CancelFunc
 	ctx       context.Context
 
-	// Network configuration
-	socksPort int // 15491 for tun2socks
-	apiPort   int // 15490 for dashboard
-
-	// Configuration
+	socksPort  int
+	apiPort    int
 	configPath string
 	configDir  string
 	assetPath  string
 	logLevel   string
 
-	// Log subscription (FlClash pattern)
 	logSubscriber observable.Subscription[mihomolog.Event]
 	logFilePath   string
 }
 
-// NewMihomoCoreManager creates a new Mihomo core manager
 func NewMihomoCoreManager(socksPort, apiPort int) *MihomoCoreManager {
 	return &MihomoCoreManager{
 		socksPort: socksPort,
@@ -49,35 +43,30 @@ func NewMihomoCoreManager(socksPort, apiPort int) *MihomoCoreManager {
 	}
 }
 
-// SetAssetPath sets the asset directory path
 func (m *MihomoCoreManager) SetAssetPath(assetPath string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.assetPath = assetPath
 }
 
-// SetLogLevel sets the logging level
 func (m *MihomoCoreManager) SetLogLevel(logLevel string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.logLevel = logLevel
 }
 
-// SetConfigDir sets the configuration directory
 func (m *MihomoCoreManager) SetConfigDir(configDir string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.configDir = configDir
 }
 
-// GetConfigDir returns the configuration directory
 func (m *MihomoCoreManager) GetConfigDir() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.configDir
 }
 
-// RunConfig starts the Mihomo core with the specified configuration
 func (m *MihomoCoreManager) RunConfig(configPath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -88,24 +77,19 @@ func (m *MihomoCoreManager) RunConfig(configPath string) error {
 
 	m.configPath = configPath
 
-	// Set up Mihomo environment
 	if err := m.setupEnvironment(); err != nil {
 		return fmt.Errorf("failed to setup environment: %w", err)
 	}
 
-	// Read and inject configuration
 	configBytes, err := m.prepareConfigBytes(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to prepare config: %w", err)
 	}
 
-	// Create context for cancellation
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 
-	// Start core in goroutine
 	go m.runCoreAsync(configBytes)
 
-	// Wait a bit to ensure startup
 	time.Sleep(300 * time.Millisecond)
 
 	m.isRunning = true
@@ -113,40 +97,34 @@ func (m *MihomoCoreManager) RunConfig(configPath string) error {
 	return nil
 }
 
-// setupEnvironment sets up the Mihomo environment directories and paths
 func (m *MihomoCoreManager) setupEnvironment() error {
-	// Set home directory
+
 	homeDir := m.assetPath
 	if homeDir == "" {
 		homeDir = m.configDir
 	}
 	if homeDir == "" {
-		// Use current directory as fallback
+
 		currentDir, _ := os.Getwd()
 		homeDir = currentDir
 	}
 
-	// Ensure directory exists
 	if err := os.MkdirAll(homeDir, 0755); err != nil {
 		return fmt.Errorf("failed to create home directory: %w", err)
 	}
 
-	// Set Mihomo paths
 	C.SetHomeDir(homeDir)
 
-	// Set config path (Mihomo expects this to be set)
 	configFileName := "config.yaml"
 	if m.configPath != "" {
 		configFileName = filepath.Base(m.configPath)
 	}
 	C.SetConfig(filepath.Join(homeDir, configFileName))
 
-	// Initialize config directory (this must succeed for logging to work)
 	if err := config.Init(homeDir); err != nil {
 		return fmt.Errorf("failed to initialize config directory: %w", err)
 	}
 
-	// Create log directory to ensure Mihomo can write logs
 	logDir := filepath.Join(homeDir, "log")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
@@ -155,27 +133,23 @@ func (m *MihomoCoreManager) setupEnvironment() error {
 	return nil
 }
 
-// prepareConfigBytes reads the config file, injects required settings, and returns bytes
 func (m *MihomoCoreManager) prepareConfigBytes(configPath string) ([]byte, error) {
-	// Read original config
+
 	configBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Try to parse as YAML first, then JSON
 	var config map[string]interface{}
 	if err := yaml.Unmarshal(configBytes, &config); err != nil {
-		// Try JSON if YAML fails
+
 		if err := json.Unmarshal(configBytes, &config); err != nil {
 			return nil, fmt.Errorf("failed to parse config as YAML or JSON: %w", err)
 		}
 	}
 
-	// Inject required configuration for tun2socks compatibility
 	m.injectRequiredConfig(config)
 
-	// Marshal back to YAML (Mihomo prefers YAML)
 	injectedBytes, err := yaml.Marshal(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal injected config: %w", err)
@@ -184,25 +158,20 @@ func (m *MihomoCoreManager) prepareConfigBytes(configPath string) ([]byte, error
 	return injectedBytes, nil
 }
 
-// injectRequiredConfig injects SOCKS proxy and API configuration
 func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) {
-	// Set mixed port for SOCKS proxy (tun2socks compatibility)
+
 	config["mixed-port"] = m.socksPort
 	config["bind-address"] = "127.0.0.1"
 
-	// Set external controller for API
 	config["external-controller"] = fmt.Sprintf("127.0.0.1:%d", m.apiPort)
 
-	// Security settings
 	config["allow-lan"] = false
 	config["log-level"] = m.logLevel
 
-	// Set mode to rule if not specified
 	if _, exists := config["mode"]; !exists {
 		config["mode"] = "rule"
 	}
 
-	// Ensure basic proxy structure exists if missing
 	if _, exists := config["proxies"]; !exists {
 		config["proxies"] = []interface{}{
 			map[string]interface{}{
@@ -212,7 +181,6 @@ func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) 
 		}
 	}
 
-	// Ensure proxy-groups exist if missing
 	if _, exists := config["proxy-groups"]; !exists {
 		config["proxy-groups"] = []interface{}{
 			map[string]interface{}{
@@ -223,14 +191,12 @@ func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) 
 		}
 	}
 
-	// Ensure rules exist if missing
 	if _, exists := config["rules"]; !exists {
 		config["rules"] = []interface{}{
 			"MATCH,PROXY",
 		}
 	}
 
-	// DNS configuration
 	if _, exists := config["dns"]; !exists {
 		config["dns"] = map[string]interface{}{
 			"enable":             true,
@@ -240,15 +206,14 @@ func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) 
 		}
 	}
 
-	// Add log-file configuration if Flutter didn't inject it
 	if _, exists := config["log-file"]; !exists {
-		// Use same path structure as Flutter: applicationSupportDirectory/log/core.log
+
 		logDir := filepath.Join(m.assetPath, "log")
 		if m.assetPath == "" && m.configDir != "" {
 			logDir = filepath.Join(m.configDir, "log")
 		}
 		if logDir != "" {
-			os.MkdirAll(logDir, 0755) // Ensure log directory exists
+			os.MkdirAll(logDir, 0755)
 			logFile := filepath.Join(logDir, "core.log")
 			config["log-file"] = logFile
 			mihomolog.Infoln("Added fallback log-file: %s", logFile)
@@ -256,7 +221,7 @@ func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) 
 	} else {
 		if logFile, ok := config["log-file"].(string); ok {
 			mihomolog.Infoln("Using Flutter-injected log-file: %s", logFile)
-			// Ensure the log directory exists for the injected path
+
 			logDir := filepath.Dir(logFile)
 			if err := os.MkdirAll(logDir, 0755); err != nil {
 				mihomolog.Warnln("Failed to create log directory %s: %v", logDir, err)
@@ -266,7 +231,6 @@ func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) 
 		}
 	}
 
-	// Store log file path for manual log subscription
 	if logFile, exists := config["log-file"]; exists {
 		if logPath, ok := logFile.(string); ok {
 			m.logFilePath = logPath
@@ -276,7 +240,6 @@ func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) 
 	mihomolog.Infoln("Mihomo config injected - Mixed port: %d, External controller: 127.0.0.1:%d", m.socksPort, m.apiPort)
 }
 
-// runCoreAsync runs the core asynchronously using hub.Parse (like Clash.Meta)
 func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -287,7 +250,6 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 		m.mu.Unlock()
 	}()
 
-	// Parse configuration using FlClash pattern
 	rawConfig, err := config.UnmarshalRawConfig(configBytes)
 	if err != nil {
 		mihomolog.Errorln("Mihomo config.UnmarshalRawConfig error: %s", err.Error())
@@ -300,14 +262,11 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 		return
 	}
 
-	// Apply configuration using FlClash pattern (hub.ApplyConfig instead of hub.Parse)
 	hub.ApplyConfig(parsedConfig)
 
-	// Explicitly initialize log system like FlClash does
 	mihomolog.SetLevel(parsedConfig.General.LogLevel)
 	mihomolog.Infoln("Mihomo: Log level set to: %s", parsedConfig.General.LogLevel.String())
 
-	// Start manual log subscription (FlClash pattern)
 	m.startLogSubscription()
 
 	mihomolog.Infoln("Mihomo core started successfully via hub.ApplyConfig")
@@ -315,29 +274,24 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 	// Wait for shutdown signal
 	<-m.ctx.Done()
 
-	// Stop log subscription
 	m.stopLogSubscription()
 
-	// Cleanup using executor.Shutdown (like Clash.Meta)
 	executor.Shutdown()
 	mihomolog.Infoln("Mihomo core stopped")
 }
 
-// Stop stops the Mihomo core
 func (m *MihomoCoreManager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if !m.isRunning {
-		return nil // Already stopped
+		return nil
 	}
 
-	// Cancel context to signal shutdown
 	if m.cancel != nil {
 		m.cancel()
 	}
 
-	// Give it time to cleanup
 	time.Sleep(100 * time.Millisecond)
 
 	m.isRunning = false
@@ -345,27 +299,23 @@ func (m *MihomoCoreManager) Stop() error {
 	return nil
 }
 
-// IsRunning returns whether the Mihomo core is running
 func (m *MihomoCoreManager) IsRunning() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.isRunning
 }
 
-// TestConfig validates the Mihomo configuration without starting
 func (m *MihomoCoreManager) TestConfig(configPath string) error {
-	// Set up environment for testing
+
 	if err := m.setupEnvironment(); err != nil {
 		return fmt.Errorf("failed to setup environment: %w", err)
 	}
 
-	// Prepare config bytes
 	configBytes, err := m.prepareConfigBytes(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to prepare config: %w", err)
 	}
 
-	// Try to parse the configuration using Mihomo's parser
 	if _, err := executor.ParseWithBytes(configBytes); err != nil {
 		return fmt.Errorf("invalid Mihomo configuration: %w", err)
 	}
@@ -374,9 +324,8 @@ func (m *MihomoCoreManager) TestConfig(configPath string) error {
 	return nil
 }
 
-// startLogSubscription starts manual log capturing (FlClash pattern)
 func (m *MihomoCoreManager) startLogSubscription() {
-	// Stop existing subscription if any
+
 	m.stopLogSubscription()
 
 	if m.logFilePath == "" {
@@ -384,12 +333,11 @@ func (m *MihomoCoreManager) startLogSubscription() {
 		return
 	}
 
-	// Subscribe to log events
 	m.logSubscriber = mihomolog.Subscribe()
 	mihomolog.Infoln("Started log subscription for file: %s", m.logFilePath)
 
 	go func() {
-		// Ensure log file exists
+
 		logFile, err := os.OpenFile(m.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			mihomolog.Errorln("Failed to open log file for writing: %v", err)
@@ -397,33 +345,29 @@ func (m *MihomoCoreManager) startLogSubscription() {
 		}
 		defer logFile.Close()
 
-		// Write initial marker
 		logFile.WriteString(fmt.Sprintf("[%s] Mihomo core log subscription started\n", time.Now().Format("2006-01-02 15:04:05")))
 
-		// Process log events
 		for logData := range m.logSubscriber {
 			if logData.LogLevel < mihomolog.Level() {
 				continue
 			}
 
-			// Format and write log entry
 			logEntry := fmt.Sprintf("[%s] [%s] %s\n",
 				time.Now().Format("2006-01-02 15:04:05"),
 				logData.LogLevel.String(),
 				logData.Payload)
 
 			if _, err := logFile.WriteString(logEntry); err != nil {
-				// If we can't write to file, at least log the error
+
 				mihomolog.Errorln("Failed to write log entry: %v", err)
 			} else {
-				// Flush to ensure logs are written immediately
+
 				logFile.Sync()
 			}
 		}
 	}()
 }
 
-// stopLogSubscription stops the manual log capturing
 func (m *MihomoCoreManager) stopLogSubscription() {
 	if m.logSubscriber != nil {
 		mihomolog.UnSubscribe(m.logSubscriber)
@@ -432,7 +376,6 @@ func (m *MihomoCoreManager) stopLogSubscription() {
 	}
 }
 
-// GetStats returns Mihomo specific statistics
 func (m *MihomoCoreManager) GetStats() map[string]interface{} {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -449,20 +392,17 @@ func (m *MihomoCoreManager) GetStats() map[string]interface{} {
 	}
 }
 
-// UpdateConfig updates the configuration by restarting with new config
 func (m *MihomoCoreManager) UpdateConfig(configPath string) error {
 	if !m.isRunning {
 		return fmt.Errorf("Mihomo core is not running")
 	}
 
-	// For Mihomo, we need to restart to apply new config
 	mihomolog.Infoln("Restarting Mihomo core with new configuration...")
 
 	if err := m.Stop(); err != nil {
 		return fmt.Errorf("failed to stop core: %w", err)
 	}
 
-	// Wait for complete shutdown
 	time.Sleep(200 * time.Millisecond)
 
 	if err := m.RunConfig(configPath); err != nil {

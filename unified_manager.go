@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// UnifiedCoreManager manages multiple proxy cores in a unified interface
 type UnifiedCoreManager struct {
 	mu       sync.RWMutex
 	coreType CoreType
@@ -16,24 +15,19 @@ type UnifiedCoreManager struct {
 	cancel   context.CancelFunc
 	ctx      context.Context
 
-	// Core implementations
 	v2rayManager  *V2RayCoreManager
 	mihomoManager *MihomoCoreManager
 
-	// Network configuration
-	socksPort int // 15491 for tun2socks
-	apiPort   int // 15490 for dashboard
+	socksPort int
+	apiPort   int
 
-	// Configuration
 	configPath   string
 	configFormat string
 
-	// Environment settings
 	assetPath string
 	logLevel  string
 }
 
-// setCoreType sets the core type for the manager (internal method)
 func (u *UnifiedCoreManager) setCoreType(coreType CoreType) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -53,7 +47,6 @@ func (u *UnifiedCoreManager) setCoreType(coreType CoreType) error {
 	return nil
 }
 
-// SetCoreType sets the core type from a string (gomobile compatible)
 func (u *UnifiedCoreManager) SetCoreType(coreTypeStr string) error {
 	coreType, err := ParseCoreType(coreTypeStr)
 	if err != nil {
@@ -62,7 +55,6 @@ func (u *UnifiedCoreManager) SetCoreType(coreTypeStr string) error {
 	return u.setCoreType(coreType)
 }
 
-// SetCoreTypeFromString sets the core type from a string
 func (u *UnifiedCoreManager) SetCoreTypeFromString(coreTypeStr string) error {
 	coreType, err := ParseCoreType(coreTypeStr)
 	if err != nil {
@@ -71,7 +63,6 @@ func (u *UnifiedCoreManager) SetCoreTypeFromString(coreTypeStr string) error {
 	return u.setCoreType(coreType)
 }
 
-// DetectAndSetCoreType detects core type from configuration content
 func (u *UnifiedCoreManager) DetectAndSetCoreType(configContent string) error {
 	coreType, err := DetectCoreTypeFromConfig(configContent)
 	if err != nil {
@@ -80,7 +71,6 @@ func (u *UnifiedCoreManager) DetectAndSetCoreType(configContent string) error {
 	return u.setCoreType(coreType)
 }
 
-// SetPorts configures the SOCKS and API ports
 func (u *UnifiedCoreManager) SetPorts(socksPort, apiPort int) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -104,21 +94,18 @@ func (u *UnifiedCoreManager) SetPorts(socksPort, apiPort int) error {
 	return nil
 }
 
-// SetAssetPath sets the asset directory path for cores
 func (u *UnifiedCoreManager) SetAssetPath(assetPath string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.assetPath = assetPath
 }
 
-// SetLogLevel sets the logging level
 func (u *UnifiedCoreManager) SetLogLevel(logLevel string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.logLevel = logLevel
 }
 
-// RunConfig starts the core with the specified configuration file
 func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -129,7 +116,6 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 
 	u.configPath = configPath
 
-	// Create context for cancellation
 	u.ctx, u.cancel = context.WithCancel(context.Background())
 
 	var err error
@@ -154,13 +140,12 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 	return nil
 }
 
-// Stop stops the currently running core
 func (u *UnifiedCoreManager) Stop() error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
 	if !u.running {
-		return nil // Already stopped
+		return nil
 	}
 
 	var err error
@@ -171,7 +156,6 @@ func (u *UnifiedCoreManager) Stop() error {
 		err = u.stopMihomoCore()
 	}
 
-	// Cancel context
 	if u.cancel != nil {
 		u.cancel()
 		u.cancel = nil
@@ -189,40 +173,34 @@ func (u *UnifiedCoreManager) Stop() error {
 	return nil
 }
 
-// IsRunning returns whether the core is currently running
 func (u *UnifiedCoreManager) IsRunning() bool {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.running
 }
 
-// GetCoreType returns the current core type
 func (u *UnifiedCoreManager) GetCoreType() CoreType {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.coreType
 }
 
-// GetCoreTypeString returns the current core type as a string
 func (u *UnifiedCoreManager) GetCoreTypeString() string {
 	return u.GetCoreType().String()
 }
 
-// GetSOCKSPort returns the configured SOCKS port
 func (u *UnifiedCoreManager) GetSOCKSPort() int {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.socksPort
 }
 
-// GetAPIPort returns the configured API port
 func (u *UnifiedCoreManager) GetAPIPort() int {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.apiPort
 }
 
-// TestConfig validates the configuration without starting the core
 func (u *UnifiedCoreManager) TestConfig(configPath string) error {
 	u.mu.RLock()
 	coreType := u.coreType
@@ -238,7 +216,6 @@ func (u *UnifiedCoreManager) TestConfig(configPath string) error {
 	}
 }
 
-// Restart stops and restarts the core with the current configuration
 func (u *UnifiedCoreManager) Restart() error {
 	u.mu.RLock()
 	configPath := u.configPath
@@ -252,32 +229,27 @@ func (u *UnifiedCoreManager) Restart() error {
 		return fmt.Errorf("failed to stop core for restart: %w", err)
 	}
 
-	// Wait a bit for proper cleanup
 	time.Sleep(100 * time.Millisecond)
 
 	return u.RunConfig(configPath)
 }
 
-// SwitchCoreType switches to a different core type and restarts if running
 func (u *UnifiedCoreManager) SwitchCoreType(newCoreType CoreType) error {
 	u.mu.RLock()
 	currentlyRunning := u.running
 	configPath := u.configPath
 	u.mu.RUnlock()
 
-	// Stop current core if running
 	if currentlyRunning {
 		if err := u.Stop(); err != nil {
 			return fmt.Errorf("failed to stop current core: %w", err)
 		}
 	}
 
-	// Set new core type
 	if err := u.setCoreType(newCoreType); err != nil {
 		return fmt.Errorf("failed to set new core type: %w", err)
 	}
 
-	// Restart with previous config if it was running
 	if currentlyRunning && configPath != "" {
 		if err := u.RunConfig(configPath); err != nil {
 			return fmt.Errorf("failed to start new core: %w", err)
@@ -287,7 +259,6 @@ func (u *UnifiedCoreManager) SwitchCoreType(newCoreType CoreType) error {
 	return nil
 }
 
-// GetStats returns basic statistics about the core
 func (u *UnifiedCoreManager) GetStats() map[string]interface{} {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
@@ -302,7 +273,6 @@ func (u *UnifiedCoreManager) GetStats() map[string]interface{} {
 		"config_format": u.configFormat,
 	}
 
-	// Add core-specific stats
 	switch u.coreType {
 	case CoreTypeV2Ray, CoreTypeXray:
 		if u.v2rayManager != nil {
@@ -316,8 +286,6 @@ func (u *UnifiedCoreManager) GetStats() map[string]interface{} {
 
 	return stats
 }
-
-// Core-specific implementation methods (to be implemented in separate files)
 
 func (u *UnifiedCoreManager) startV2RayCore(configPath string) error {
 	if u.v2rayManager == nil {
