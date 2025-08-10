@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/metacubex/mihomo/common/observable"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/hub"
@@ -33,6 +34,10 @@ type MihomoCoreManager struct {
 	configDir  string
 	assetPath  string
 	logLevel   string
+
+	// Log subscription (FlClash pattern)
+	logSubscriber observable.Subscription[mihomolog.Event]
+	logFilePath   string
 }
 
 // NewMihomoCoreManager creates a new Mihomo core manager
@@ -261,6 +266,13 @@ func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) 
 		}
 	}
 
+	// Store log file path for manual log subscription
+	if logFile, exists := config["log-file"]; exists {
+		if logPath, ok := logFile.(string); ok {
+			m.logFilePath = logPath
+		}
+	}
+
 	mihomolog.Infoln("Mihomo config injected - Mixed port: %d, External controller: 127.0.0.1:%d", m.socksPort, m.apiPort)
 }
 
@@ -291,10 +303,20 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 	// Apply configuration using FlClash pattern (hub.ApplyConfig instead of hub.Parse)
 	hub.ApplyConfig(parsedConfig)
 
+	// Explicitly initialize log system like FlClash does
+	mihomolog.SetLevel(parsedConfig.General.LogLevel)
+	mihomolog.Infoln("Mihomo: Log level set to: %s", parsedConfig.General.LogLevel.String())
+
+	// Start manual log subscription (FlClash pattern)
+	m.startLogSubscription()
+
 	mihomolog.Infoln("Mihomo core started successfully via hub.ApplyConfig")
 
 	// Wait for shutdown signal
 	<-m.ctx.Done()
+
+	// Stop log subscription
+	m.stopLogSubscription()
 
 	// Cleanup using executor.Shutdown (like Clash.Meta)
 	executor.Shutdown()
@@ -350,6 +372,64 @@ func (m *MihomoCoreManager) TestConfig(configPath string) error {
 
 	mihomolog.Infoln("Mihomo configuration validation passed: %s", configPath)
 	return nil
+}
+
+// startLogSubscription starts manual log capturing (FlClash pattern)
+func (m *MihomoCoreManager) startLogSubscription() {
+	// Stop existing subscription if any
+	m.stopLogSubscription()
+
+	if m.logFilePath == "" {
+		mihomolog.Warnln("No log file path available for manual log subscription")
+		return
+	}
+
+	// Subscribe to log events
+	m.logSubscriber = mihomolog.Subscribe()
+	mihomolog.Infoln("Started log subscription for file: %s", m.logFilePath)
+
+	go func() {
+		// Ensure log file exists
+		logFile, err := os.OpenFile(m.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			mihomolog.Errorln("Failed to open log file for writing: %v", err)
+			return
+		}
+		defer logFile.Close()
+
+		// Write initial marker
+		logFile.WriteString(fmt.Sprintf("[%s] Mihomo core log subscription started\n", time.Now().Format("2006-01-02 15:04:05")))
+
+		// Process log events
+		for logData := range m.logSubscriber {
+			if logData.LogLevel < mihomolog.Level() {
+				continue
+			}
+
+			// Format and write log entry
+			logEntry := fmt.Sprintf("[%s] [%s] %s\n",
+				time.Now().Format("2006-01-02 15:04:05"),
+				logData.LogLevel.String(),
+				logData.Payload)
+
+			if _, err := logFile.WriteString(logEntry); err != nil {
+				// If we can't write to file, at least log the error
+				mihomolog.Errorln("Failed to write log entry: %v", err)
+			} else {
+				// Flush to ensure logs are written immediately
+				logFile.Sync()
+			}
+		}
+	}()
+}
+
+// stopLogSubscription stops the manual log capturing
+func (m *MihomoCoreManager) stopLogSubscription() {
+	if m.logSubscriber != nil {
+		mihomolog.UnSubscribe(m.logSubscriber)
+		m.logSubscriber = nil
+		mihomolog.Infoln("Stopped log subscription")
+	}
 }
 
 // GetStats returns Mihomo specific statistics
