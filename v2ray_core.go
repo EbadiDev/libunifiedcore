@@ -224,8 +224,23 @@ func (v *V2RayCoreManager) readAndInjectConfig(configPath string) ([]byte, error
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
+	// Check if this is a wrapper config
 	var config map[string]interface{}
-	if err := json.Unmarshal(configBytes, &config); err != nil {
+	var wrapperConfig map[string]interface{}
+	if err := json.Unmarshal(configBytes, &wrapperConfig); err == nil {
+		if coreConfig, exists := wrapperConfig["coreConfig"]; exists {
+			// This is a wrapper config, extract the actual config
+			if coreConfigMap, ok := coreConfig.(map[string]interface{}); ok {
+				// coreConfig is already a map, use it directly
+				config = coreConfigMap
+			} else {
+				return nil, fmt.Errorf("invalid coreConfig format in wrapper")
+			}
+		} else {
+			// Not a wrapper config, use the whole config
+			config = wrapperConfig
+		}
+	} else {
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 

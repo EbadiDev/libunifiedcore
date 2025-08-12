@@ -14,11 +14,14 @@ var (
 )
 
 func NewUnifiedCoreManager() *UnifiedCoreManager {
+	// Get default ports from core type
+	defaultSocksPort, _, defaultAPIPort := CoreTypeV2Ray.GetDefaultPorts()
+	
 	manager := &UnifiedCoreManager{
 		coreType:     CoreTypeV2Ray,
 		running:      false,
-		socksPort:    15491, // for socks
-		apiPort:      15490, // for api port dashboard
+		socksPort:    defaultSocksPort, // Use default from core type
+		apiPort:      defaultAPIPort,   // Use default from core type
 		configFormat: "json",
 		logLevel:     globalLogLevel,
 		assetPath:    globalAssetPath,
