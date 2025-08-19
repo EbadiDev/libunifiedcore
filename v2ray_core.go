@@ -139,7 +139,7 @@ func (v *V2RayCoreManager) runConfigSync(configPath string) {
 		return
 	}
 
-	log.Printf("V2Ray core started and listening on SOCKS %d, API %d", v.socksPort, v.apiPort)
+	log.Printf("V2Ray core started and listening with pre-injected config from Flutter")
 
 	// Explicitly trigger GC to remove garbage from config loading
 	runtime.GC()
@@ -244,145 +244,13 @@ func (v *V2RayCoreManager) readAndInjectConfig(configPath string) ([]byte, error
 		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
-	v.injectRequiredConfig(config)
-
-	// Marshal back to JSON
-	injectedBytes, err := json.Marshal(config)
+	// Use config as-is since Flutter ConfigInjectorUnified already injected everything
+	finalConfigBytes, err := json.Marshal(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal injected config: %w", err)
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	return injectedBytes, nil
-}
-
-func (v *V2RayCoreManager) injectRequiredConfig(config map[string]interface{}) {
-
-	if _, exists := config["inbounds"]; !exists {
-		config["inbounds"] = make([]interface{}, 0)
-	}
-
-	inbounds := config["inbounds"].([]interface{})
-
-	// Add SOCKS inbound for tun2socks (port 15491)
-	socksInbound := map[string]interface{}{
-		"tag":      "tun2socks-in",
-		"port":     v.socksPort,
-		"listen":   "127.0.0.1",
-		"protocol": "socks",
-		"settings": map[string]interface{}{
-			"ip":        "127.0.0.1",
-			"userLevel": 0,
-		},
-		"streamSettings": map[string]interface{}{},
-	}
-
-	// Insert at beginning to ensure priority
-	inbounds = append([]interface{}{socksInbound}, inbounds...)
-
-	// Add API inbound (port 15490)
-	apiInbound := map[string]interface{}{
-		"tag":      "api-in",
-		"port":     v.apiPort,
-		"listen":   "127.0.0.1",
-		"protocol": "dokodemo-door",
-		"settings": map[string]interface{}{
-			"address": "127.0.0.1",
-		},
-	}
-
-	inbounds = append([]interface{}{apiInbound}, inbounds...)
-	config["inbounds"] = inbounds
-
-	// Configure API
-	config["api"] = map[string]interface{}{
-		"tag": "api",
-		"services": []string{
-			"HandlerService",
-			"LoggerService",
-			"StatsService",
-		},
-	}
-
-	// Configure stats
-	config["stats"] = map[string]interface{}{}
-
-	// Configure policy for stats
-	if policy, exists := config["policy"]; exists {
-		if policyMap, ok := policy.(map[string]interface{}); ok {
-			if system, exists := policyMap["system"]; exists {
-				if systemMap, ok := system.(map[string]interface{}); ok {
-					systemMap["statsInboundUplink"] = true
-					systemMap["statsInboundDownlink"] = true
-				}
-			} else {
-				policyMap["system"] = map[string]interface{}{
-					"statsInboundUplink":   true,
-					"statsInboundDownlink": true,
-				}
-			}
-		}
-	} else {
-		config["policy"] = map[string]interface{}{
-			"system": map[string]interface{}{
-				"statsInboundUplink":   true,
-				"statsInboundDownlink": true,
-			},
-		}
-	}
-
-	// Configure routing to route API traffic to API handler
-	if routing, exists := config["routing"]; exists {
-		if routingMap, ok := routing.(map[string]interface{}); ok {
-			if rules, exists := routingMap["rules"]; exists {
-				if rulesSlice, ok := rules.([]interface{}); ok {
-					// Add API routing rule at the beginning
-					apiRule := map[string]interface{}{
-						"type":        "field",
-						"inboundTag":  []string{"api-in"},
-						"outboundTag": "api",
-					}
-					rulesSlice = append([]interface{}{apiRule}, rulesSlice...)
-					routingMap["rules"] = rulesSlice
-				}
-			} else {
-				routingMap["rules"] = []interface{}{
-					map[string]interface{}{
-						"type":        "field",
-						"inboundTag":  []string{"api-in"},
-						"outboundTag": "api",
-					},
-				}
-			}
-		}
-	} else {
-		config["routing"] = map[string]interface{}{
-			"rules": []interface{}{
-				map[string]interface{}{
-					"type":        "field",
-					"inboundTag":  []string{"api-in"},
-					"outboundTag": "api",
-				},
-			},
-		}
-	}
-
-	// Ensure outbounds array exists and has API outbound
-	if _, exists := config["outbounds"]; !exists {
-		config["outbounds"] = make([]interface{}, 0)
-	}
-
-	outbounds := config["outbounds"].([]interface{})
-
-	// Add API outbound
-	apiOutbound := map[string]interface{}{
-		"tag":      "api",
-		"protocol": "blackhole",
-	}
-
-	outbounds = append(outbounds, apiOutbound)
-	config["outbounds"] = outbounds
-
-	log.Printf("V2Ray config injected - SOCKS: %d, API: %d", v.socksPort, v.apiPort)
+	return finalConfigBytes, nil
 }
 
 // readFileAsBytes reads a file and returns its content as bytes

@@ -168,96 +168,27 @@ func (m *MihomoCoreManager) prepareConfigBytes(configPath string) ([]byte, error
 		}
 	}
 
-	m.injectRequiredConfig(config)
-
-	injectedBytes, err := yaml.Marshal(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal injected config: %w", err)
-	}
-
-	return injectedBytes, nil
-}
-
-func (m *MihomoCoreManager) injectRequiredConfig(config map[string]interface{}) {
-
-	config["mixed-port"] = m.socksPort
-	config["bind-address"] = "127.0.0.1"
-
-	config["external-controller"] = fmt.Sprintf("127.0.0.1:%d", m.apiPort)
-
-	config["allow-lan"] = false
-	config["log-level"] = m.logLevel
-
-	if _, exists := config["mode"]; !exists {
-		config["mode"] = "rule"
-	}
-
-	if _, exists := config["proxies"]; !exists {
-		config["proxies"] = []interface{}{
-			map[string]interface{}{
-				"name": "DIRECT",
-				"type": "direct",
-			},
-		}
-	}
-
-	if _, exists := config["proxy-groups"]; !exists {
-		config["proxy-groups"] = []interface{}{
-			map[string]interface{}{
-				"name":    "PROXY",
-				"type":    "select",
-				"proxies": []string{"DIRECT"},
-			},
-		}
-	}
-
-	if _, exists := config["rules"]; !exists {
-		config["rules"] = []interface{}{
-			"MATCH,PROXY",
-		}
-	}
-
-	if _, exists := config["dns"]; !exists {
-		config["dns"] = map[string]interface{}{
-			"enable":             true,
-			"listen":             "127.0.0.1:1053",
-			"default-nameserver": []string{"8.8.8.8", "1.1.1.1"},
-			"nameserver":         []string{"8.8.8.8", "1.1.1.1"},
-		}
-	}
-
-	if _, exists := config["log-file"]; !exists {
-
-		logDir := filepath.Join(m.assetPath, "log")
-		if m.assetPath == "" && m.configDir != "" {
-			logDir = filepath.Join(m.configDir, "log")
-		}
-		if logDir != "" {
-			os.MkdirAll(logDir, 0755)
-			logFile := filepath.Join(logDir, "core.log")
-			config["log-file"] = logFile
-			mihomolog.Infoln("Added fallback log-file: %s", logFile)
-		}
-	} else {
-		if logFile, ok := config["log-file"].(string); ok {
-			mihomolog.Infoln("Using Flutter-injected log-file: %s", logFile)
-
-			logDir := filepath.Dir(logFile)
-			if err := os.MkdirAll(logDir, 0755); err != nil {
-				mihomolog.Warnln("Failed to create log directory %s: %v", logDir, err)
-			}
-		} else {
-			mihomolog.Infoln("Using Flutter-injected log-file configuration (non-string type)")
-		}
-	}
-
+	// Use config as-is since Flutter ConfigInjectorUnified already injected everything
+	// Only preserve log file path extraction for subscription
 	if logFile, exists := config["log-file"]; exists {
 		if logPath, ok := logFile.(string); ok {
 			m.logFilePath = logPath
+			mihomolog.Infoln("Extracted log file path from config: %s", m.logFilePath)
+		} else {
+			mihomolog.Warnln("log-file exists but is not a string: %v", logFile)
 		}
+	} else {
+		mihomolog.Warnln("log-file field not found in config")
 	}
 
-	mihomolog.Infoln("Mihomo config injected - Mixed port: %d, External controller: 127.0.0.1:%d", m.socksPort, m.apiPort)
+	mihomolog.Infoln("Using pre-injected Mihomo config from Flutter ConfigInjectorUnified")
+
+	finalConfigBytes, err := yaml.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	return finalConfigBytes, nil
 }
 
 func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
@@ -282,12 +213,15 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 		return
 	}
 
+	// Start log subscription BEFORE applying config to catch startup logs
+	mihomolog.Infoln("About to call startLogSubscription with path: %s", m.logFilePath)
+	m.startLogSubscription()
+	mihomolog.Infoln("startLogSubscription call completed")
+
 	hub.ApplyConfig(parsedConfig)
 
 	mihomolog.SetLevel(parsedConfig.General.LogLevel)
 	mihomolog.Infoln("Mihomo: Log level set to: %s", parsedConfig.General.LogLevel.String())
-
-	m.startLogSubscription()
 
 	mihomolog.Infoln("Mihomo core started successfully via hub.ApplyConfig")
 
@@ -345,8 +279,9 @@ func (m *MihomoCoreManager) TestConfig(configPath string) error {
 }
 
 func (m *MihomoCoreManager) startLogSubscription() {
-
 	m.stopLogSubscription()
+
+	mihomolog.Infoln("Attempting to start log subscription with path: '%s'", m.logFilePath)
 
 	if m.logFilePath == "" {
 		mihomolog.Warnln("No log file path available for manual log subscription")
@@ -357,7 +292,6 @@ func (m *MihomoCoreManager) startLogSubscription() {
 	mihomolog.Infoln("Started log subscription for file: %s", m.logFilePath)
 
 	go func() {
-
 		logFile, err := os.OpenFile(m.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			mihomolog.Errorln("Failed to open log file for writing: %v", err)
@@ -368,20 +302,15 @@ func (m *MihomoCoreManager) startLogSubscription() {
 		logFile.WriteString(fmt.Sprintf("[%s] Mihomo core log subscription started\n", time.Now().Format("2006-01-02 15:04:05")))
 
 		for logData := range m.logSubscriber {
-			if logData.LogLevel < mihomolog.Level() {
-				continue
-			}
-
+			// Log ALL messages regardless of level to ensure we don't miss anything
 			logEntry := fmt.Sprintf("[%s] [%s] %s\n",
 				time.Now().Format("2006-01-02 15:04:05"),
 				logData.LogLevel.String(),
 				logData.Payload)
 
 			if _, err := logFile.WriteString(logEntry); err != nil {
-
 				mihomolog.Errorln("Failed to write log entry: %v", err)
 			} else {
-
 				logFile.Sync()
 			}
 		}

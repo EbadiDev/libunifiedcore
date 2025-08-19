@@ -14,6 +14,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// minInt returns the minimum of two integers
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 type UnifiedCoreManager struct {
 	mu       sync.RWMutex
 	coreType CoreType
@@ -47,7 +55,7 @@ func (u *UnifiedCoreManager) setCoreType(coreType CoreType) error {
 	}
 
 	u.coreType = coreType
-	u.configFormat = coreType.GetConfigFormat()
+	u.configFormat = "json" // Always use JSON format
 
 	log.Printf("Core type set to: %s", coreType.DisplayName())
 	return nil
@@ -69,13 +77,6 @@ func (u *UnifiedCoreManager) SetCoreTypeFromString(coreTypeStr string) error {
 	return u.setCoreType(coreType)
 }
 
-func (u *UnifiedCoreManager) DetectAndSetCoreType(configContent string) error {
-	coreType, err := DetectCoreTypeFromConfig(configContent)
-	if err != nil {
-		return fmt.Errorf("failed to detect core type: %w", err)
-	}
-	return u.setCoreType(coreType)
-}
 
 func (u *UnifiedCoreManager) SetPorts(socksPort, apiPort int) error {
 	u.mu.Lock()
@@ -122,55 +123,46 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 
 	u.configPath = configPath
 
-	// Auto-detect core type if not set
-	if u.coreType == CoreTypeV2Ray && !u.running {
-		// Read config file and detect core type
-		configBytes, err := os.ReadFile(configPath)
-		if err != nil {
-			return fmt.Errorf("failed to read config file: %w", err)
-		}
+	log.Printf("Starting core with initial type: %s", u.coreType.DisplayName())
 
-		// Check if this is a wrapper config (contains coreType and coreConfig)
-		var wrapperConfig map[string]interface{}
-		if err := json.Unmarshal(configBytes, &wrapperConfig); err == nil {
-			if coreTypeStr, exists := wrapperConfig["coreType"].(string); exists {
-				// This is a wrapper config, use the specified core type
-				detectedCoreType, err := ParseCoreType(coreTypeStr)
-				if err != nil {
-					return fmt.Errorf("failed to parse core type from wrapper: %w", err)
-				}
-				u.coreType = detectedCoreType
-				u.configFormat = detectedCoreType.GetConfigFormat()
-				log.Printf("Using core type from wrapper config: %s", detectedCoreType.DisplayName())
-			} else {
-				// Not a wrapper config, try to detect from content
-				detectedCoreType, err := DetectCoreTypeFromConfig(string(configBytes))
-				if err != nil {
-					return fmt.Errorf("failed to detect core type from config: %w", err)
-				}
-				u.coreType = detectedCoreType
-				u.configFormat = detectedCoreType.GetConfigFormat()
-				log.Printf("Auto-detected core type: %s", detectedCoreType.DisplayName())
-			}
-		} else {
-			// Not JSON, try to detect from content
-			detectedCoreType, err := DetectCoreTypeFromConfig(string(configBytes))
-			if err != nil {
-				return fmt.Errorf("failed to detect core type from config: %w", err)
-			}
-			u.coreType = detectedCoreType
-			u.configFormat = detectedCoreType.GetConfigFormat()
-			log.Printf("Auto-detected core type: %s", detectedCoreType.DisplayName())
-		}
+	// Always read coreType from Flutter's injected config
+	configBytes, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		return fmt.Errorf("failed to read config file: %w", readErr)
 	}
 
+	log.Printf("Config file content preview: %s", string(configBytes[:minInt(200, len(configBytes))]))
+
+	// Parse the injected config (must be JSON with coreType field)
+	var injectedConfig map[string]interface{}
+	if err := json.Unmarshal(configBytes, &injectedConfig); err != nil {
+		return fmt.Errorf("failed to parse injected config as JSON: %w", err)
+	}
+
+	// Read coreType field that Flutter must inject
+	coreTypeStr, exists := injectedConfig["coreType"].(string)
+	if !exists {
+		return fmt.Errorf("injected config missing required coreType field - Flutter injection failed")
+	}
+
+	detectedCoreType, parseErr := ParseCoreType(coreTypeStr)
+	if parseErr != nil {
+		return fmt.Errorf("invalid coreType in injected config: %s - %w", coreTypeStr, parseErr)
+	}
+
+	u.coreType = detectedCoreType
+	u.configFormat = "json" // Always use JSON format
+	log.Printf("Using core type from injected config: %s", detectedCoreType.DisplayName())
+
 	// Extract ports from config instead of using hardcoded defaults
+	log.Printf("Extracting ports from config: %s", configPath)
 	if err := u.extractPortsFromConfig(configPath); err != nil {
 		log.Printf("Warning: Failed to extract ports from config, using defaults: %v", err)
 		// Use default ports as fallback
 		u.socksPort = 15491
 		u.apiPort = 15490
 	}
+	log.Printf("Final ports configured - SOCKS: %d, API: %d", u.socksPort, u.apiPort)
 
 	u.ctx, u.cancel = context.WithCancel(context.Background())
 

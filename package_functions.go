@@ -14,14 +14,11 @@ var (
 )
 
 func NewUnifiedCoreManager() *UnifiedCoreManager {
-	// Get default ports from core type
-	defaultSocksPort, _, defaultAPIPort := CoreTypeV2Ray.GetDefaultPorts()
-	
 	manager := &UnifiedCoreManager{
-		coreType:     CoreTypeV2Ray,
+		coreType:     CoreTypeXray, // Default to Xray, will be detected from config
 		running:      false,
-		socksPort:    defaultSocksPort, // Use default from core type
-		apiPort:      defaultAPIPort,   // Use default from core type
+		socksPort:    0, // Will be set from injected config
+		apiPort:      0, // Will be set from injected config
 		configFormat: "json",
 		logLevel:     globalLogLevel,
 		assetPath:    globalAssetPath,
@@ -87,16 +84,9 @@ func TestConfigFile(configPath string, coreType string) bool {
 			return false
 		}
 	} else {
-		configBytes, err := os.ReadFile(configPath)
-		if err != nil {
-			log.Printf("Failed to read config file: %v", err)
-			return false
-		}
-
-		if err := manager.DetectAndSetCoreType(string(configBytes)); err != nil {
-			log.Printf("Failed to detect core type: %v", err)
-			return false
-		}
+		// Without explicit core type, we can't test the config since Flutter injection is required
+		log.Printf("Core type must be specified for config testing")
+		return false
 	}
 
 	if err := manager.TestConfig(configPath); err != nil {
@@ -108,21 +98,7 @@ func TestConfigFile(configPath string, coreType string) bool {
 	return true
 }
 
-func DetectCoreTypeFromFile(configPath string) string {
-	configBytes, err := os.ReadFile(configPath)
-	if err != nil {
-		log.Printf("Failed to read config file: %v", err)
-		return "unknown"
-	}
 
-	coreType, err := DetectCoreTypeFromConfig(string(configBytes))
-	if err != nil {
-		log.Printf("Failed to detect core type: %v", err)
-		return "unknown"
-	}
-
-	return coreType.String()
-}
 
 func SetGlobalPorts(socksPort, apiPort int) bool {
 	if socksPort <= 0 || socksPort > 65535 || apiPort <= 0 || apiPort > 65535 {
@@ -163,41 +139,7 @@ func IsValidCoreType(coreType string) bool {
 	return err == nil
 }
 
-func GetDefaultPorts(coreType string) map[string]int {
-	ct, err := ParseCoreType(coreType)
-	if err != nil {
-		return map[string]int{
-			"socks": 15491,
-			"http":  15492,
-			"api":   15490,
-		}
-	}
 
-	socksPort, httpPort, apiPort := ct.GetDefaultPorts()
-	return map[string]int{
-		"socks": socksPort,
-		"http":  httpPort,
-		"api":   apiPort,
-	}
-}
-
-func GetConfigFormat(coreType string) string {
-	ct, err := ParseCoreType(coreType)
-	if err != nil {
-		return "json"
-	}
-
-	return ct.GetConfigFormat()
-}
-
-func ValidateConfigFormat(coreType, format string) bool {
-	ct, err := ParseCoreType(coreType)
-	if err != nil {
-		return false
-	}
-
-	return ct.SupportsFormat(format)
-}
 
 func GetRuntimeInfo() map[string]interface{} {
 	return map[string]interface{}{
@@ -208,10 +150,6 @@ func GetRuntimeInfo() map[string]interface{} {
 		"os":              runtime.GOOS,
 		"arch":            runtime.GOARCH,
 		"supported_cores": GetSupportedCoreTypes(),
-		"default_ports": map[string]int{
-			"socks": 15491,
-			"api":   15490,
-		},
 	}
 }
 
@@ -255,14 +193,7 @@ func SetAssetPath(assetPath string) {
 	log.Printf("Global asset path set to: %s", assetPath)
 }
 
-func DetectCoreType(configContent string) string {
-	coreType, err := DetectCoreTypeFromConfig(configContent)
-	if err != nil {
-		log.Printf("Failed to detect core type: %v", err)
-		return "v2ray"
-	}
-	return coreType.String()
-}
+
 
 func GetMemoryStats() string {
 	var m runtime.MemStats
