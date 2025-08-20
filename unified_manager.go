@@ -6,12 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // minInt returns the minimum of two integers
@@ -183,12 +179,11 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 		return fmt.Errorf("core is already running")
 	}
 
-	// Extract ports from config instead of using hardcoded defaults
-	log.Printf("Extracting ports from config: %s", configPath)
-	if err := u.extractPortsFromConfig(configPath); err != nil {
-		log.Printf("Warning: Failed to extract ports from config, using defaults: %v", err)
-		// Use default ports as fallback
+	// Use default ports for ping tests - Flutter manages port allocation
+	if u.socksPort == 0 {
 		u.socksPort = 15491
+	}
+	if u.apiPort == 0 {
 		u.apiPort = 15490
 	}
 	log.Printf("Final ports configured - SOCKS: %d, API: %d", u.socksPort, u.apiPort)
@@ -385,81 +380,6 @@ func (u *UnifiedCoreManager) testV2RayConfig(configPath string) error {
 		u.v2rayManager = NewV2RayCoreManager(u.socksPort, u.apiPort)
 	}
 	return u.v2rayManager.TestConfig(configPath)
-}
-
-func (u *UnifiedCoreManager) extractPortsFromConfig(configPath string) error {
-	configBytes, err := os.ReadFile(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	// Check if this is a wrapper config
-	var wrapperConfig map[string]interface{}
-	if err := json.Unmarshal(configBytes, &wrapperConfig); err == nil {
-		if coreConfig, exists := wrapperConfig["coreConfig"]; exists {
-			// This is a wrapper config, extract the actual config
-			if coreConfigMap, ok := coreConfig.(map[string]interface{}); ok {
-				return u.extractPortsFromConfigMap(coreConfigMap)
-			} else if coreConfigStr, ok := coreConfig.(string); ok {
-				// coreConfig is a string (YAML), parse it
-				var config map[string]interface{}
-				if err := yaml.Unmarshal([]byte(coreConfigStr), &config); err != nil {
-					return fmt.Errorf("failed to parse coreConfig YAML: %w", err)
-				}
-				return u.extractPortsFromConfigMap(config)
-			}
-		} else {
-			// Not a wrapper config, try to parse as regular config
-			return u.extractPortsFromConfigMap(wrapperConfig)
-		}
-	} else {
-		// Not JSON, try YAML
-		var config map[string]interface{}
-		if err := yaml.Unmarshal(configBytes, &config); err != nil {
-			return fmt.Errorf("failed to parse config as YAML: %w", err)
-		}
-		return u.extractPortsFromConfigMap(config)
-	}
-
-	return fmt.Errorf("failed to parse config")
-}
-
-func (u *UnifiedCoreManager) extractPortsFromConfigMap(config map[string]interface{}) error {
-	// Extract SOCKS/mixed port
-	if mixedPort, exists := config["mixed-port"]; exists {
-		if port, ok := mixedPort.(int); ok {
-			u.socksPort = port
-			log.Printf("Extracted SOCKS/mixed port from config: %d", port)
-		}
-	} else if socksPort, exists := config["socks-port"]; exists {
-		if port, ok := socksPort.(int); ok {
-			u.socksPort = port
-			log.Printf("Extracted SOCKS port from config: %d", port)
-		}
-	} else if port, exists := config["port"]; exists {
-		if portInt, ok := port.(int); ok {
-			u.socksPort = portInt
-			log.Printf("Extracted port from config: %d", portInt)
-		}
-	}
-
-	// Extract API/external-controller port
-	if externalController, exists := config["external-controller"]; exists {
-		if controllerStr, ok := externalController.(string); ok {
-			// Parse "127.0.0.1:15490" format
-			if strings.Contains(controllerStr, ":") {
-				parts := strings.Split(controllerStr, ":")
-				if len(parts) == 2 {
-					if port, err := strconv.Atoi(parts[1]); err == nil {
-						u.apiPort = port
-						log.Printf("Extracted API port from external-controller: %d", port)
-					}
-				}
-			}
-		}
-	}
-
-	return nil
 }
 
 func (u *UnifiedCoreManager) startMihomoCore(configPath string) error {
