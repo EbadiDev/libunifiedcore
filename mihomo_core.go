@@ -194,22 +194,19 @@ func (m *MihomoCoreManager) prepareConfigBytes(configPath string) ([]byte, error
 func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 	defer func() {
 		if r := recover(); r != nil {
-			mihomolog.Errorln("Mihomo core panic recovered: %v", r)
+			mihomolog.Errorln("Mihomo core panicked: %v", r)
 		}
-		m.mu.Lock()
-		m.isRunning = false
-		m.mu.Unlock()
 	}()
 
 	rawConfig, err := config.UnmarshalRawConfig(configBytes)
 	if err != nil {
-		mihomolog.Errorln("Mihomo config.UnmarshalRawConfig error: %s", err.Error())
+		mihomolog.Errorln("Failed to unmarshal Mihomo config: %v", err)
 		return
 	}
 
 	parsedConfig, err := config.ParseRawConfig(rawConfig)
 	if err != nil {
-		mihomolog.Errorln("Mihomo config.ParseRawConfig error: %s", err.Error())
+		mihomolog.Errorln("Failed to parse Mihomo config: %v", err)
 		return
 	}
 
@@ -242,11 +239,15 @@ func (m *MihomoCoreManager) Stop() error {
 		return nil
 	}
 
+	// Immediately shutdown Mihomo executor to release ports
+	executor.Shutdown()
+	mihomolog.Infoln("Mihomo executor shutdown called")
+
 	if m.cancel != nil {
 		m.cancel()
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	m.stopLogSubscription()
 
 	m.isRunning = false
 	mihomolog.Infoln("Mihomo core stopped successfully")

@@ -117,10 +117,6 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	if u.running {
-		return fmt.Errorf("core is already running")
-	}
-
 	u.configPath = configPath
 
 	log.Printf("Starting core with initial type: %s", u.coreType.DisplayName())
@@ -150,9 +146,42 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 		return fmt.Errorf("invalid coreType in injected config: %s - %w", coreTypeStr, parseErr)
 	}
 
+	// Check if we need to switch core types
+	if u.running && u.coreType != detectedCoreType {
+		log.Printf("Core type change detected: %s -> %s, stopping current core first", u.coreType.DisplayName(), detectedCoreType.DisplayName())
+		
+		// Stop the current running core
+		var stopErr error
+		switch u.coreType {
+		case CoreTypeV2Ray, CoreTypeXray:
+			stopErr = u.stopV2RayCore()
+		case CoreTypeMihomo:
+			stopErr = u.stopMihomoCore()
+		}
+
+		if u.cancel != nil {
+			u.cancel()
+			u.cancel = nil
+		}
+
+		u.running = false
+
+		if stopErr != nil {
+			log.Printf("Warning: Failed to stop previous %s core: %v", u.coreType.DisplayName(), stopErr)
+		}
+
+		// Brief wait for port cleanup - VPN apps need speed
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	u.coreType = detectedCoreType
 	u.configFormat = "json" // Always use JSON format
 	log.Printf("Using core type from injected config: %s", detectedCoreType.DisplayName())
+
+	// Check if already running the same core type
+	if u.running {
+		return fmt.Errorf("core is already running")
+	}
 
 	// Extract ports from config instead of using hardcoded defaults
 	log.Printf("Extracting ports from config: %s", configPath)
