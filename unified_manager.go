@@ -181,10 +181,11 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 
 	// Use default ports for ping tests - Flutter manages port allocation
 	if u.socksPort == 0 {
-		u.socksPort = 15491
+		// random port
+		u.socksPort = 10000 + time.Now().Nanosecond()%50000
 	}
 	if u.apiPort == 0 {
-		u.apiPort = 15490
+		u.apiPort = 10000 + time.Now().Nanosecond()%50000
 	}
 	log.Printf("Final ports configured - SOCKS: %d, API: %d", u.socksPort, u.apiPort)
 

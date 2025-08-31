@@ -33,6 +33,9 @@ type MihomoCoreManager struct {
 
 	logSubscriber observable.Subscription[mihomolog.Event]
 	logFilePath   string
+
+		// Channel to signal when SOCKS port is ready
+		portReadyCh chan struct{}
 }
 
 func NewMihomoCoreManager(socksPort, apiPort int) *MihomoCoreManager {
@@ -88,9 +91,28 @@ func (m *MihomoCoreManager) RunConfig(configPath string) error {
 
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 
+		// Create port ready channel for ping mode
+		m.portReadyCh = make(chan struct{}, 1)
+
 	go m.runCoreAsync(configBytes)
 
-	time.Sleep(300 * time.Millisecond)
+		// Wait for port readiness if ping mode is detected
+		var config map[string]interface{}
+		json.Unmarshal(configBytes, &config)
+		pingMode := false
+		if v, ok := config["pingMode"]; ok {
+			pingMode, _ = v.(bool)
+		}
+		if pingMode {
+			select {
+			case <-m.portReadyCh:
+				// Port is ready, continue
+			case <-time.After(1200 * time.Millisecond):
+				// Timeout, continue anyway
+			}
+		} else {
+			time.Sleep(300 * time.Millisecond)
+		}
 
 	m.isRunning = true
 	mihomolog.Infoln("Mihomo core started successfully on Mixed port %d, API port %d", m.socksPort, m.apiPort)
@@ -222,8 +244,20 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 
 	mihomolog.Infoln("Mihomo core started successfully via hub.ApplyConfig")
 
-	// Wait for shutdown signal
-	<-m.ctx.Done()
+
+		// Signal port readiness for ping mode (SOCKS port open)
+		go func() {
+			// Wait for port to be open (simple sleep or poll)
+			// TODO: Replace with actual port check if available
+			time.Sleep(120 * time.Millisecond)
+			select {
+			case m.portReadyCh <- struct{}{}:
+			default:
+			}
+		}()
+
+		// Wait for shutdown signal
+		<-m.ctx.Done()
 
 	m.stopLogSubscription()
 
