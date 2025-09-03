@@ -33,9 +33,9 @@ type MihomoCoreManager struct {
 
 	logSubscriber observable.Subscription[mihomolog.Event]
 	logFilePath   string
-
-		// Channel to signal when SOCKS port is ready
-		portReadyCh chan struct{}
+	
+	// Add run lock to prevent race conditions like FlClash does
+	runLock       sync.Mutex
 }
 
 func NewMihomoCoreManager(socksPort, apiPort int) *MihomoCoreManager {
@@ -71,11 +71,14 @@ func (m *MihomoCoreManager) GetConfigDir() string {
 }
 
 func (m *MihomoCoreManager) RunConfig(configPath string) error {
+	m.runLock.Lock()
+	defer m.runLock.Unlock()
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.isRunning {
-		return fmt.Errorf("Mihomo core is already running")
+		return fmt.Errorf("mihomo core is already running")
 	}
 
 	m.configPath = configPath
@@ -91,28 +94,10 @@ func (m *MihomoCoreManager) RunConfig(configPath string) error {
 
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 
-		// Create port ready channel for ping mode
-		m.portReadyCh = make(chan struct{}, 1)
-
 	go m.runCoreAsync(configBytes)
 
-		// Wait for port readiness if ping mode is detected
-		var config map[string]interface{}
-		json.Unmarshal(configBytes, &config)
-		pingMode := false
-		if v, ok := config["pingMode"]; ok {
-			pingMode, _ = v.(bool)
-		}
-		if pingMode {
-			select {
-			case <-m.portReadyCh:
-				// Port is ready, continue
-			case <-time.After(1200 * time.Millisecond):
-				// Timeout, continue anyway
-			}
-		} else {
-			time.Sleep(300 * time.Millisecond)
-		}
+	// Wait a brief moment for core startup - Flutter already provides available ports
+	time.Sleep(100 * time.Millisecond)
 
 	m.isRunning = true
 	mihomolog.Infoln("Mihomo core started successfully on Mixed port %d, API port %d", m.socksPort, m.apiPort)
@@ -156,61 +141,41 @@ func (m *MihomoCoreManager) setupEnvironment() error {
 }
 
 func (m *MihomoCoreManager) prepareConfigBytes(configPath string) ([]byte, error) {
-
-	configBytes, err := os.ReadFile(configPath)
+	jsonBytes, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// Check if this is a wrapper config
-	var config map[string]interface{}
-	var wrapperConfig map[string]interface{}
-	if err := json.Unmarshal(configBytes, &wrapperConfig); err == nil {
-		if coreConfig, exists := wrapperConfig["coreConfig"]; exists {
-			// This is a wrapper config, extract the actual config
-			if coreConfigMap, ok := coreConfig.(map[string]interface{}); ok {
-				// coreConfig is already a map, use it directly
-				config = coreConfigMap
-			} else if coreConfigStr, ok := coreConfig.(string); ok {
-				// coreConfig is a string (YAML), parse it
-				if err := yaml.Unmarshal([]byte(coreConfigStr), &config); err != nil {
-					return nil, fmt.Errorf("failed to parse coreConfig YAML: %w", err)
-				}
-			} else {
-				return nil, fmt.Errorf("invalid coreConfig format in wrapper")
-			}
-		} else {
-			// Not a wrapper config, try to parse as regular config
-			config = wrapperConfig
-		}
-	} else {
-		// Not JSON, try YAML
-		if err := yaml.Unmarshal(configBytes, &config); err != nil {
-			return nil, fmt.Errorf("failed to parse config as YAML or JSON: %w", err)
-		}
+	// The config from Flutter is JSON. We need to convert it to YAML for mihomo.
+	// We unmarshal to a generic interface{} to preserve data structures.
+	var configData interface{}
+	if err := json.Unmarshal(jsonBytes, &configData); err != nil {
+		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
-	// Use config as-is since Flutter ConfigInjectorUnified already injected everything
-	// Only preserve log file path extraction for subscription
-	if logFile, exists := config["log-file"]; exists {
-		if logPath, ok := logFile.(string); ok {
-			m.logFilePath = logPath
-			mihomolog.Infoln("Extracted log file path from config: %s", m.logFilePath)
+	// Marshal the Go data structure to YAML bytes.
+	yamlBytes, err := yaml.Marshal(configData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal config to YAML: %w", err)
+	}
+
+	// For log subscription, we can peek into the map.
+	if configMap, ok := configData.(map[string]interface{}); ok {
+		if logFile, exists := configMap["log-file"]; exists {
+			if logPath, ok := logFile.(string); ok {
+				m.logFilePath = logPath
+				mihomolog.Infoln("Extracted log file path from config: %s", m.logFilePath)
+			} else {
+				mihomolog.Warnln("log-file exists but is not a string: %v", logFile)
+			}
 		} else {
-			mihomolog.Warnln("log-file exists but is not a string: %v", logFile)
+			mihomolog.Warnln("log-file field not found in config")
 		}
-	} else {
-		mihomolog.Warnln("log-file field not found in config")
 	}
 
 	mihomolog.Infoln("Using pre-injected Mihomo config from Flutter ConfigInjectorUnified")
 
-	finalConfigBytes, err := yaml.Marshal(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	return finalConfigBytes, nil
+	return yamlBytes, nil
 }
 
 func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
@@ -237,6 +202,8 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 	m.startLogSubscription()
 	mihomolog.Infoln("startLogSubscription call completed")
 
+	// Apply config with proper error handling
+	mihomolog.Infoln("Applying Mihomo configuration...")
 	hub.ApplyConfig(parsedConfig)
 
 	mihomolog.SetLevel(parsedConfig.General.LogLevel)
@@ -244,28 +211,20 @@ func (m *MihomoCoreManager) runCoreAsync(configBytes []byte) {
 
 	mihomolog.Infoln("Mihomo core started successfully via hub.ApplyConfig")
 
+	// Wait for shutdown signal
+	<-m.ctx.Done()
 
-		// Signal port readiness for ping mode (SOCKS port open)
-		go func() {
-			// Wait for port to be open (simple sleep or poll)
-			// TODO: Replace with actual port check if available
-			time.Sleep(120 * time.Millisecond)
-			select {
-			case m.portReadyCh <- struct{}{}:
-			default:
-			}
-		}()
-
-		// Wait for shutdown signal
-		<-m.ctx.Done()
-
+	// Clean shutdown - just stop log subscription, don't apply empty config
+	// as it causes race conditions during rapid start/stop cycles
 	m.stopLogSubscription()
 
-	executor.Shutdown()
-	mihomolog.Infoln("Mihomo core stopped")
+	mihomolog.Infoln("Mihomo core instance context cancelled.")
 }
 
 func (m *MihomoCoreManager) Stop() error {
+	m.runLock.Lock()
+	defer m.runLock.Unlock()
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -273,18 +232,16 @@ func (m *MihomoCoreManager) Stop() error {
 		return nil
 	}
 
-	// Immediately shutdown Mihomo executor to release ports
-	executor.Shutdown()
-	mihomolog.Infoln("Mihomo executor shutdown called")
-
+	// Cancel the context to signal the runCoreAsync goroutine to stop.
 	if m.cancel != nil {
 		m.cancel()
+		m.cancel = nil // Prevent reuse
 	}
 
 	m.stopLogSubscription()
 
 	m.isRunning = false
-	mihomolog.Infoln("Mihomo core stopped successfully")
+	mihomolog.Infoln("Mihomo core instance stop requested.")
 	return nil
 }
 
@@ -378,7 +335,7 @@ func (m *MihomoCoreManager) GetStats() map[string]interface{} {
 
 func (m *MihomoCoreManager) UpdateConfig(configPath string) error {
 	if !m.isRunning {
-		return fmt.Errorf("Mihomo core is not running")
+		return fmt.Errorf("mihomo core is not running")
 	}
 
 	mihomolog.Infoln("Restarting Mihomo core with new configuration...")

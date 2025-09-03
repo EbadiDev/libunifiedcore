@@ -8,12 +8,18 @@ import (
 )
 
 var (
-	defaultManager  *UnifiedCoreManager
-	globalAssetPath string
-	globalLogLevel  string = "info"
+	globalUnifiedManager *UnifiedCoreManager
+	globalAssetPath      string
+	globalLogLevel       string = "info"
+	
+	// Singleton instances to prevent conflicts
+	globalMihomoManager *MihomoCoreManager
+	globalV2RayManager  *V2RayCoreManager
 )
 
 func NewUnifiedCoreManager() *UnifiedCoreManager {
+	// Create a new manager instance for each ping test (Flutter expects isolated managers)
+	// but the underlying core managers will be singletons to prevent conflicts
 	manager := &UnifiedCoreManager{
 		coreType:     CoreTypeXray, // Default to Xray, will be detected from config
 		running:      false,
@@ -24,13 +30,12 @@ func NewUnifiedCoreManager() *UnifiedCoreManager {
 		assetPath:    globalAssetPath,
 	}
 
-	log.Printf("Created new UnifiedCoreManager with default settings")
+	log.Printf("Created new UnifiedCoreManager (isolated instance for ping test)")
 	return manager
 }
 
 func NewCoreManager() *UnifiedCoreManager {
-	defaultManager = NewUnifiedCoreManager()
-	return defaultManager
+	return NewUnifiedCoreManager()
 }
 
 func SetEnv(key string, val string) {
@@ -40,8 +45,8 @@ func SetEnv(key string, val string) {
 	switch key {
 	case "v2ray.location.asset", "xray.location.asset":
 		globalAssetPath = val
-		if defaultManager != nil {
-			defaultManager.SetAssetPath(val)
+		if globalUnifiedManager != nil {
+			globalUnifiedManager.SetAssetPath(val)
 		}
 	}
 }
@@ -50,8 +55,8 @@ func SetLogLevel(logLevel string) {
 	globalLogLevel = logLevel
 	log.Printf("Global log level set to: %s", logLevel)
 
-	if defaultManager != nil {
-		defaultManager.SetLogLevel(logLevel)
+	if globalUnifiedManager != nil {
+		globalUnifiedManager.SetLogLevel(logLevel)
 	}
 }
 
@@ -154,35 +159,35 @@ func GetRuntimeInfo() map[string]interface{} {
 }
 
 func InitializeGlobalManager() bool {
-	if defaultManager != nil {
-		log.Println("Global manager already initialized")
+	if globalUnifiedManager != nil {
+		log.Println("Global unified manager already initialized")
 		return true
 	}
 
-	defaultManager = NewUnifiedCoreManager()
+	globalUnifiedManager = NewUnifiedCoreManager()
 	if globalAssetPath != "" {
-		defaultManager.SetAssetPath(globalAssetPath)
+		globalUnifiedManager.SetAssetPath(globalAssetPath)
 	}
-	defaultManager.SetLogLevel(globalLogLevel)
+	globalUnifiedManager.SetLogLevel(globalLogLevel)
 
-	log.Println("Global manager initialized successfully")
+	log.Println("Global unified manager initialized successfully")
 	return true
 }
 
 func GetGlobalManager() *UnifiedCoreManager {
-	if defaultManager == nil {
+	if globalUnifiedManager == nil {
 		InitializeGlobalManager()
 	}
-	return defaultManager
+	return globalUnifiedManager
 }
 
 func CleanupGlobalManager() {
-	if defaultManager != nil {
-		if defaultManager.IsRunning() {
-			defaultManager.Stop()
+	if globalUnifiedManager != nil {
+		if globalUnifiedManager.IsRunning() {
+			globalUnifiedManager.Stop()
 		}
-		defaultManager = nil
-		log.Println("Global manager cleaned up")
+		globalUnifiedManager = nil
+		log.Println("Global unified manager cleaned up")
 	}
 }
 

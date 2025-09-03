@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -127,7 +128,7 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 
 	// Parse the injected config (must be JSON with coreType field)
 	var injectedConfig map[string]interface{}
-	if err := json.Unmarshal(configBytes, &injectedConfig); err != nil {
+ 	if err := json.Unmarshal(configBytes, &injectedConfig); err != nil {
 		return fmt.Errorf("failed to parse injected config as JSON: %w", err)
 	}
 
@@ -153,6 +154,8 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 			stopErr = u.stopV2RayCore()
 		case CoreTypeMihomo:
 			stopErr = u.stopMihomoCore()
+			// Give Mihomo cores extra time to cleanup goroutines and channels
+			time.Sleep(100 * time.Millisecond)
 		}
 
 		if u.cancel != nil {
@@ -174,14 +177,62 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 	u.configFormat = "json" // Always use JSON format
 	log.Printf("Using core type from injected config: %s", detectedCoreType.DisplayName())
 
-	// Check if already running the same core type
+	// If already running the same core type, stop it first to restart with new config
 	if u.running {
-		return fmt.Errorf("core is already running")
+		log.Printf("Core already running, stopping first to restart with new config")
+		
+		var stopErr error
+		switch u.coreType {
+		case CoreTypeV2Ray, CoreTypeXray:
+			stopErr = u.stopV2RayCore()
+		case CoreTypeMihomo:
+			stopErr = u.stopMihomoCore()
+			// Give Mihomo cores extra time to cleanup
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		if u.cancel != nil {
+			u.cancel()
+			u.cancel = nil
+		}
+
+		u.running = false
+
+		if stopErr != nil {
+			log.Printf("Warning: Failed to stop core for restart: %v", stopErr)
+		}
+
+		// Brief wait for cleanup
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Use default ports for ping tests - Flutter manages port allocation
+	// Extract ports from Flutter's injected config instead of generating random ones
+	if socksPortRaw, exists := injectedConfig["mixed-port"]; exists {
+		if socksPortFloat, ok := socksPortRaw.(float64); ok {
+			u.socksPort = int(socksPortFloat)
+		}
+	}
+	if apiPortRaw, exists := injectedConfig["external-controller"]; exists {
+		if apiPortStr, ok := apiPortRaw.(string); ok {
+			// Parse "127.0.0.1:port" format
+			colonIndex := -1
+			for i := len(apiPortStr) - 1; i >= 0; i-- {
+				if apiPortStr[i] == ':' {
+					colonIndex = i
+					break
+				}
+			}
+			if colonIndex >= 0 && colonIndex < len(apiPortStr)-1 {
+				portStr := apiPortStr[colonIndex+1:]
+				if port, parseErr := strconv.Atoi(portStr); parseErr == nil {
+					u.apiPort = port
+				}
+			}
+		}
+	}
+	
+	// Fallback to random ports if not found in config
 	if u.socksPort == 0 {
-		// random port
 		u.socksPort = 10000 + time.Now().Nanosecond()%50000
 	}
 	if u.apiPort == 0 {
@@ -197,6 +248,10 @@ func (u *UnifiedCoreManager) RunConfig(configPath string) error {
 		err = u.startV2RayCore(configPath)
 	case CoreTypeMihomo:
 		err = u.startMihomoCore(configPath)
+		// For bulk ping tests, ensure Mihomo core has time to stabilize
+		if err == nil {
+			time.Sleep(50 * time.Millisecond)
+		}
 	default:
 		return fmt.Errorf("unsupported core type: %v", u.coreType)
 	}
@@ -227,6 +282,8 @@ func (u *UnifiedCoreManager) Stop() error {
 		err = u.stopV2RayCore()
 	case CoreTypeMihomo:
 		err = u.stopMihomoCore()
+		// Allow extra time for Mihomo cleanup in bulk testing scenarios
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if u.cancel != nil {
@@ -361,11 +418,17 @@ func (u *UnifiedCoreManager) GetStats() map[string]interface{} {
 }
 
 func (u *UnifiedCoreManager) startV2RayCore(configPath string) error {
-	if u.v2rayManager == nil {
-		u.v2rayManager = NewV2RayCoreManager(u.socksPort, u.apiPort)
-		u.v2rayManager.SetAssetPath(u.assetPath)
-		u.v2rayManager.SetLogLevel(u.logLevel)
+	if globalV2RayManager == nil {
+		globalV2RayManager = NewV2RayCoreManager(u.socksPort, u.apiPort)
+	} else {
+		// Update ports for this test
+		globalV2RayManager.socksPort = u.socksPort
+		globalV2RayManager.apiPort = u.apiPort
 	}
+	globalV2RayManager.SetAssetPath(u.assetPath)
+	globalV2RayManager.SetLogLevel(u.logLevel)
+	
+	u.v2rayManager = globalV2RayManager
 	return u.v2rayManager.RunConfig(configPath)
 }
 
@@ -377,18 +440,24 @@ func (u *UnifiedCoreManager) stopV2RayCore() error {
 }
 
 func (u *UnifiedCoreManager) testV2RayConfig(configPath string) error {
-	if u.v2rayManager == nil {
-		u.v2rayManager = NewV2RayCoreManager(u.socksPort, u.apiPort)
+	if globalV2RayManager == nil {
+		globalV2RayManager = NewV2RayCoreManager(u.socksPort, u.apiPort)
 	}
-	return u.v2rayManager.TestConfig(configPath)
+	return globalV2RayManager.TestConfig(configPath)
 }
 
 func (u *UnifiedCoreManager) startMihomoCore(configPath string) error {
-	if u.mihomoManager == nil {
-		u.mihomoManager = NewMihomoCoreManager(u.socksPort, u.apiPort)
-		u.mihomoManager.SetAssetPath(u.assetPath)
-		u.mihomoManager.SetLogLevel(u.logLevel)
+	if globalMihomoManager == nil {
+		globalMihomoManager = NewMihomoCoreManager(u.socksPort, u.apiPort)
+	} else {
+		// Update ports for this test
+		globalMihomoManager.socksPort = u.socksPort
+		globalMihomoManager.apiPort = u.apiPort
 	}
+	globalMihomoManager.SetAssetPath(u.assetPath)
+	globalMihomoManager.SetLogLevel(u.logLevel)
+	
+	u.mihomoManager = globalMihomoManager
 	return u.mihomoManager.RunConfig(configPath)
 }
 
@@ -400,8 +469,8 @@ func (u *UnifiedCoreManager) stopMihomoCore() error {
 }
 
 func (u *UnifiedCoreManager) testMihomoConfig(configPath string) error {
-	if u.mihomoManager == nil {
-		u.mihomoManager = NewMihomoCoreManager(u.socksPort, u.apiPort)
+	if globalMihomoManager == nil {
+		globalMihomoManager = NewMihomoCoreManager(u.socksPort, u.apiPort)
 	}
-	return u.mihomoManager.TestConfig(configPath)
+	return globalMihomoManager.TestConfig(configPath)
 }
